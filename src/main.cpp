@@ -3,6 +3,9 @@
 #include <sstream>
 #include <vector>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -16,6 +19,28 @@ using namespace std;
 // window size
 const int WIDTH = 1280;
 const int HEIGHT = 720;
+
+// ---------------- GAME SETTINGS (tune here) ----------------
+const float TABLE_HALF_LENGTH = 1.37f;   // table top is 2.74 long
+const float TABLE_HALF_WIDTH = 0.7625f; // table top is 1.525 wide
+const float BALL_RADIUS = 0.06f;
+const float BALL_Y = 0.96f;   // height of the ball while playing
+const float FLOOR_BALL_Y = 0.04f;   // height of the ball lying on the floor
+
+const float RACKET_HALF_X = 0.035f;  // racket head half thickness
+const float RACKET_HALF_Z = 0.115f;  // racket head half width
+
+const float SERVE_SPEED = 2.0f;    // speed of the first ball
+const float MAX_SPEED = 4.5f;    // speed limit
+const float SPEED_UP = 1.04f;   // speed x1.04 after each hit
+const float OPPONENT_REACT = 8.0f;    // how fast the computer follows the ball
+const float RESPAWN_DELAY = 0.8f;    // seconds on the floor before respawn
+const float PLAYER_SPEED = 2.4f;    // player racket speed
+const float HIT_MARGIN = 0.04f;   // extra tolerance when hitting the ball
+
+// ---------------- GAME STATE ----------------
+enum GameState { WAITING, PLAYING, OUT };
+GameState state = WAITING;
 
 // camera
 float cameraYaw = 52.0f;
@@ -35,7 +60,14 @@ float opponentX = 1.05f;
 float opponentZ = 0.0f;
 
 // ball
-glm::vec3 ballPosition(0.0f, 0.96f, 0.0f);
+glm::vec3 ballStart(0.0f, BALL_Y, 0.0f);
+glm::vec3 ballPosition = ballStart;
+glm::vec3 ballVelocity(0.0f);
+float outTimer = 0.0f;
+
+// score
+int rally = 0;
+int bestRally = 0;
 
 // number of vertices of the sphere
 int sphereCount = 0;
@@ -231,6 +263,130 @@ void drawRacket(unsigned int shader, unsigned int cube, float x, float z)
     draw(shader, cube, 36, glm::vec3(x, 0.82f, z), glm::vec3(0.055f, 0.12f, 0.075f));
 }
 
+// ---------------- GAME LOGIC ----------------
+
+float randomRange(float a, float b)
+{
+    return a + (b - a) * (rand() / (float)RAND_MAX);
+}
+
+void updateTitle(GLFWwindow* window)
+{
+    char title[160];
+    if (state == WAITING)
+        snprintf(title, sizeof(title),
+            "Ping Pong a la Royale | Echange: %d | Record: %d | ESPACE pour servir",
+            rally, bestRally);
+    else
+        snprintf(title, sizeof(title),
+            "Ping Pong a la Royale | Echange: %d | Record: %d",
+            rally, bestRally);
+    glfwSetWindowTitle(window, title);
+}
+
+// puts the ball back at the center, waiting for a serve
+void respawnBall()
+{
+    ballPosition = ballStart;
+    ballVelocity = glm::vec3(0.0f);
+    outTimer = 0.0f;
+    state = WAITING;
+    rally = 0;
+}
+
+// serve: the ball goes straight to the computer
+void serveBall()
+{
+    ballPosition = ballStart;
+    ballVelocity = glm::vec3(SERVE_SPEED, 0.0f, 0.0f);
+    rally = 0;
+    state = PLAYING;
+}
+
+void updateGame(float dt)
+{
+    // ---- computer racket: follows the ball on the z axis ----
+    float target = 0.0f;
+    if (state == PLAYING && ballVelocity.x > 0.0f)
+        target = ballPosition.z;
+
+    opponentZ += (target - opponentZ) * glm::min(1.0f, OPPONENT_REACT * dt);
+    opponentZ = glm::clamp(opponentZ, -0.65f, 0.65f);
+
+    // ---- waiting for the serve ----
+    if (state == WAITING)
+    {
+        ballPosition = ballStart;
+        return;
+    }
+
+    // ---- ball fell off the table ----
+    if (state == OUT)
+    {
+        if (ballPosition.y > FLOOR_BALL_Y)
+        {
+            ballVelocity.y -= 9.8f * dt;               // gravity
+            ballPosition += ballVelocity * dt;
+        }
+        else
+        {
+            ballPosition.y = FLOOR_BALL_Y;             // lies on the floor
+            ballVelocity = glm::vec3(0.0f);
+            outTimer += dt;
+            if (outTimer > RESPAWN_DELAY)
+                respawnBall();
+        }
+        return;
+    }
+
+    // ---- PLAYING: move the ball ----
+    ballPosition.x += ballVelocity.x * dt;
+    ballPosition.z += ballVelocity.z * dt;
+    ballPosition.y = BALL_Y;
+
+    // bounce on the sides of the table
+    float limitZ = TABLE_HALF_WIDTH - BALL_RADIUS;
+    if (ballPosition.z > limitZ) { ballPosition.z = limitZ;  ballVelocity.z = -ballVelocity.z; }
+    if (ballPosition.z < -limitZ) { ballPosition.z = -limitZ; ballVelocity.z = -ballVelocity.z; }
+
+    // computer racket: always hits the ball back
+    if (ballVelocity.x > 0.0f &&
+        ballPosition.x + BALL_RADIUS >= opponentX - RACKET_HALF_X)
+    {
+        ballPosition.x = opponentX - RACKET_HALF_X - BALL_RADIUS;
+        float speed = glm::min(glm::abs(ballVelocity.x) * SPEED_UP, MAX_SPEED);
+        ballVelocity.x = -speed;
+        ballVelocity.z = randomRange(-0.9f, 0.9f);
+    }
+
+    // player racket
+    if (ballVelocity.x < 0.0f &&
+        ballPosition.x - BALL_RADIUS <= playerX + RACKET_HALF_X &&
+        ballPosition.x + BALL_RADIUS >= playerX - RACKET_HALF_X &&
+        glm::abs(ballPosition.z - playerZ) <= RACKET_HALF_Z + BALL_RADIUS + HIT_MARGIN)
+    {
+        ballPosition.x = playerX + RACKET_HALF_X + BALL_RADIUS;
+        float speed = glm::min(glm::abs(ballVelocity.x) * SPEED_UP, MAX_SPEED);
+        ballVelocity.x = speed;
+
+        // the angle depends on where the ball touches the racket
+        float offset = ballPosition.z - playerZ;
+        ballVelocity.z = glm::clamp(offset * 6.0f, -1.8f, 1.8f);
+
+        rally++;
+        if (rally > bestRally) bestRally = rally;
+    }
+
+    // missed: the ball leaves the table on the player side
+    if (ballPosition.x < -TABLE_HALF_LENGTH)
+    {
+        state = OUT;
+        outTimer = 0.0f;
+        ballVelocity.x *= 0.3f;   // slow down so it doesn't fly through the wall
+        ballVelocity.y = 0.0f;
+    }
+}
+
 // ---------------- CAMERA AND INPUT ----------------
 
 glm::mat4 getView()
@@ -282,7 +438,11 @@ void processInput(GLFWwindow* window, float dt)
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 
-    float move = 1.8f * dt;
+    // serve with SPACE
+    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS && state == WAITING)
+        serveBall();
+
+    float move = PLAYER_SPEED * dt;
 
     if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)  playerZ -= move;
     if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) playerZ += move;
@@ -290,7 +450,7 @@ void processInput(GLFWwindow* window, float dt)
     if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)  playerX -= move;
 
     // keep the racket on its side of the table
-    playerZ = glm::clamp(playerZ, -0.55f, 0.55f);
+    playerZ = glm::clamp(playerZ, -0.65f, 0.65f);
     playerX = glm::clamp(playerX, -1.20f, -0.78f);
 }
 
@@ -298,6 +458,8 @@ void processInput(GLFWwindow* window, float dt)
 
 int main()
 {
+    srand((unsigned int)time(NULL));
+
     glfwInit();
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -330,14 +492,26 @@ int main()
     unsigned int sphere = makeSphere();
 
     float lastFrame = 0.0f;
+    int lastRally = -1;
+    GameState lastState = OUT;
 
     while (!glfwWindowShouldClose(window))
     {
-        float now = glfwGetTime();
+        float now = (float)glfwGetTime();
         float dt = now - lastFrame;
         lastFrame = now;
+        if (dt > 0.05f) dt = 0.05f;   // avoid huge steps (window drag, lag)
 
         processInput(window, dt);
+        updateGame(dt);
+
+        // refresh the window title only when something changed
+        if (rally != lastRally || state != lastState)
+        {
+            updateTitle(window);
+            lastRally = rally;
+            lastState = state;
+        }
 
         glClearColor(0.18f, 0.18f, 0.18f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -380,7 +554,7 @@ int main()
         drawRacket(shader, cube, opponentX, opponentZ);
 
         // ball
-        draw(shader, sphere, sphereCount, ballPosition, glm::vec3(0.06f));
+        draw(shader, sphere, sphereCount, ballPosition, glm::vec3(BALL_RADIUS));
 
         glfwSwapBuffers(window);
         glfwPollEvents();
