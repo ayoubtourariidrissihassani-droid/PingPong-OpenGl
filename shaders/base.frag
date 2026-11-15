@@ -1,21 +1,72 @@
 #version 330 core
 
+in vec3 FragPos;
 in vec3 Normal;
+
 out vec4 FragColor;
+
+// material
+uniform vec3 uColor;
+uniform bool uEmissive;
+
+// camera
+uniform vec3 viewPos;
+
+// spot light
+uniform vec3  lightPos;
+uniform vec3  lightDir;
+uniform vec3  lightColor;
+uniform float lightInnerCos;
+uniform float lightOuterCos;
+uniform float lightConstant;
+uniform float lightLinear;
+uniform float lightQuadratic;
+
+// base lighting level (lower = darker scene)
+const float BASE_AMBIENT = 0.22;
+const float BASE_DIFFUSE = 0.28;
 
 void main()
 {
-    vec3 normal = normalize(Normal);
+    // bulb: always bright
+    if (uEmissive)
+    {
+        FragColor = vec4(lightColor, 1.0);
+        return;
+    }
 
-    vec3 lightDir = normalize(vec3(-0.5, 1.0, 0.7));
+    vec3 norm = normalize(Normal);
 
-    float diffuse = max(dot(normal, lightDir), 0.0);
+    // ---- base lighting (slightly dark) ----
+    vec3 baseDir = normalize(vec3(-0.5, 1.0, 0.7));
+    float baseDiffuse = max(dot(norm, baseDir), 0.0);
+    float intensity = BASE_AMBIENT + baseDiffuse * BASE_DIFFUSE;
+    vec3 base = uColor * intensity;
 
-    float ambient = 0.45;
+    // ---- spot light ----
+    vec3 toLight = lightPos - FragPos;
+    float dist = length(toLight);
+    vec3 L = toLight / dist;
 
-    float intensity = ambient + diffuse * 0.45;
+    // cone with smooth edge
+    float theta = dot(L, normalize(-lightDir));
+    float epsilon = lightInnerCos - lightOuterCos;
+    float spot = clamp((theta - lightOuterCos) / epsilon, 0.0, 1.0);
 
-    vec3 gray = vec3(0.65) * intensity;
+    // attenuation
+    float attenuation = 1.0 / (lightConstant + lightLinear * dist + lightQuadratic * dist * dist);
 
-    FragColor = vec4(gray, 1.0);
+    // diffuse
+    float diff = max(dot(norm, L), 0.0);
+    vec3 diffuse = diff * lightColor * uColor;
+
+    // specular (Blinn-Phong)
+    vec3 V = normalize(viewPos - FragPos);
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(norm, H), 0.0), 32.0);
+    vec3 specular = 0.25 * spec * lightColor;
+
+    vec3 spotResult = (diffuse + specular) * spot * attenuation;
+
+    FragColor = vec4(base + spotResult, 1.0);
 }
