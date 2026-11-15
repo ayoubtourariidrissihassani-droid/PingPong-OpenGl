@@ -1,0 +1,17 @@
+# dossiers produits par la compilation
+build/
+out/
+cmake-build-*/
+
+# environnements de developpement
+.vs/
+.vscode/
+*.user
+
+# binaires et fichiers temporaires
+*.exe
+*.pdb
+*.ilk
+*.o
+*.obj
+.DS_Store
