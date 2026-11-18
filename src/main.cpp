@@ -14,6 +14,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
 using namespace std;
 
 // window size
@@ -53,7 +56,7 @@ const float LIGHT_QUADRATIC = 0.017f;
 const bool USE_COLORS = true;
 const glm::vec3 COL_DEFAULT(0.65f, 0.65f, 0.65f);
 
-// gray objects (same gray as before)
+// gray objects (used when no texture is found)
 const glm::vec3 COL_GRAY_FLOOR(0.65f, 0.65f, 0.65f);
 const glm::vec3 COL_GRAY_WALL(0.65f, 0.65f, 0.65f);
 const glm::vec3 COL_METAL(0.65f, 0.65f, 0.65f);
@@ -97,6 +100,12 @@ int bestRally = 0;
 
 // number of vertices of the sphere
 int sphereCount = 0;
+
+// textures (0 = not loaded)
+unsigned int texFloor = 0;
+unsigned int texWallBack = 0;
+unsigned int texWallLeft = 0;
+unsigned int texWallRight = 0;
 
 // ---------------- SHADERS ----------------
 
@@ -169,55 +178,95 @@ void setBool(unsigned int shader, const char* name, bool v)
     glUniform1i(glGetUniformLocation(shader, name), v ? 1 : 0);
 }
 
+// ---------------- TEXTURES ----------------
+
+// loads a jpg/png file and returns an OpenGL texture (0 if it fails)
+unsigned int loadTexture(const char* path)
+{
+    stbi_set_flip_vertically_on_load(true);   // image origin is top-left, OpenGL is bottom-left
+
+    int w, h, channels;
+    unsigned char* data = stbi_load(path, &w, &h, &channels, 0);
+    if (!data)
+    {
+        cout << "Texture not found: " << path << " (gray color used instead)" << endl;
+        return 0;
+    }
+
+    GLenum format = GL_RGB;
+    if (channels == 1) format = GL_RED;
+    else if (channels == 3) format = GL_RGB;
+    else if (channels == 4) format = GL_RGBA;
+
+    unsigned int tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);    // safe for any image width
+    glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0, format, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+
+    // no repeat: the image is placed exactly once on the surface
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+    stbi_image_free(data);
+    cout << "Texture loaded: " << path << " (" << w << "x" << h << ")" << endl;
+    return tex;
+}
+
 // ---------------- SHAPES ----------------
 
-// each vertex = position (3 floats) + normal (3 floats)
+// each vertex = position (3) + normal (3) + texture coordinate (2)
+// every face goes from (0,0) to (1,1): the image fits the face exactly
 float cubeVertices[] = {
-    // back
-    -0.5f,-0.5f,-0.5f,  0,0,-1,
-     0.5f, 0.5f,-0.5f,  0,0,-1,
-     0.5f,-0.5f,-0.5f,  0,0,-1,
-     0.5f, 0.5f,-0.5f,  0,0,-1,
-    -0.5f,-0.5f,-0.5f,  0,0,-1,
-    -0.5f, 0.5f,-0.5f,  0,0,-1,
-    // front
-    -0.5f,-0.5f, 0.5f,  0,0,1,
-     0.5f,-0.5f, 0.5f,  0,0,1,
-     0.5f, 0.5f, 0.5f,  0,0,1,
-     0.5f, 0.5f, 0.5f,  0,0,1,
-    -0.5f, 0.5f, 0.5f,  0,0,1,
-    -0.5f,-0.5f, 0.5f,  0,0,1,
-    // left
-    -0.5f, 0.5f, 0.5f, -1,0,0,
-    -0.5f, 0.5f,-0.5f, -1,0,0,
-    -0.5f,-0.5f,-0.5f, -1,0,0,
-    -0.5f,-0.5f,-0.5f, -1,0,0,
-    -0.5f,-0.5f, 0.5f, -1,0,0,
-    -0.5f, 0.5f, 0.5f, -1,0,0,
-    // right
-     0.5f, 0.5f, 0.5f, 1,0,0,
-     0.5f,-0.5f,-0.5f, 1,0,0,
-     0.5f, 0.5f,-0.5f, 1,0,0,
-     0.5f,-0.5f,-0.5f, 1,0,0,
-     0.5f, 0.5f, 0.5f, 1,0,0,
-     0.5f,-0.5f, 0.5f, 1,0,0,
-     // bottom
-     -0.5f,-0.5f,-0.5f, 0,-1,0,
-      0.5f,-0.5f,-0.5f, 0,-1,0,
-      0.5f,-0.5f, 0.5f, 0,-1,0,
-      0.5f,-0.5f, 0.5f, 0,-1,0,
-     -0.5f,-0.5f, 0.5f, 0,-1,0,
-     -0.5f,-0.5f,-0.5f, 0,-1,0,
-     // top
-     -0.5f, 0.5f,-0.5f, 0,1,0,
-      0.5f, 0.5f, 0.5f, 0,1,0,
-      0.5f, 0.5f,-0.5f, 0,1,0,
-      0.5f, 0.5f, 0.5f, 0,1,0,
-     -0.5f, 0.5f,-0.5f, 0,1,0,
-     -0.5f, 0.5f, 0.5f, 0,1,0
+    // back (-z)
+    -0.5f,-0.5f,-0.5f,  0,0,-1,  1,0,
+     0.5f, 0.5f,-0.5f,  0,0,-1,  0,1,
+     0.5f,-0.5f,-0.5f,  0,0,-1,  0,0,
+     0.5f, 0.5f,-0.5f,  0,0,-1,  0,1,
+    -0.5f,-0.5f,-0.5f,  0,0,-1,  1,0,
+    -0.5f, 0.5f,-0.5f,  0,0,-1,  1,1,
+    // front (+z) : inner face of the back wall
+    -0.5f,-0.5f, 0.5f,  0,0,1,   0,0,
+     0.5f,-0.5f, 0.5f,  0,0,1,   1,0,
+     0.5f, 0.5f, 0.5f,  0,0,1,   1,1,
+     0.5f, 0.5f, 0.5f,  0,0,1,   1,1,
+    -0.5f, 0.5f, 0.5f,  0,0,1,   0,1,
+    -0.5f,-0.5f, 0.5f,  0,0,1,   0,0,
+    // left (-x) : inner face of the right wall
+    -0.5f, 0.5f, 0.5f, -1,0,0,   1,1,
+    -0.5f, 0.5f,-0.5f, -1,0,0,   0,1,
+    -0.5f,-0.5f,-0.5f, -1,0,0,   0,0,
+    -0.5f,-0.5f,-0.5f, -1,0,0,   0,0,
+    -0.5f,-0.5f, 0.5f, -1,0,0,   1,0,
+    -0.5f, 0.5f, 0.5f, -1,0,0,   1,1,
+    // right (+x) : inner face of the left wall
+     0.5f, 0.5f, 0.5f,  1,0,0,   0,1,
+     0.5f,-0.5f,-0.5f,  1,0,0,   1,0,
+     0.5f, 0.5f,-0.5f,  1,0,0,   1,1,
+     0.5f,-0.5f,-0.5f,  1,0,0,   1,0,
+     0.5f, 0.5f, 0.5f,  1,0,0,   0,1,
+     0.5f,-0.5f, 0.5f,  1,0,0,   0,0,
+     // bottom (-y)
+     -0.5f,-0.5f,-0.5f,  0,-1,0,  0,0,
+      0.5f,-0.5f,-0.5f,  0,-1,0,  1,0,
+      0.5f,-0.5f, 0.5f,  0,-1,0,  1,1,
+      0.5f,-0.5f, 0.5f,  0,-1,0,  1,1,
+     -0.5f,-0.5f, 0.5f,  0,-1,0,  0,1,
+     -0.5f,-0.5f,-0.5f,  0,-1,0,  0,0,
+     // top (+y) : floor surface (top of the image = back wall side)
+     -0.5f, 0.5f,-0.5f,  0,1,0,   0,1,
+      0.5f, 0.5f, 0.5f,  0,1,0,   1,0,
+      0.5f, 0.5f,-0.5f,  0,1,0,   1,1,
+      0.5f, 0.5f, 0.5f,  0,1,0,   1,0,
+     -0.5f, 0.5f,-0.5f,  0,1,0,   0,1,
+     -0.5f, 0.5f, 0.5f,  0,1,0,   0,0
 };
 
-// makes a VAO from a list of floats (position + normal)
+// makes a VAO from a list of floats (position + normal + uv)
 unsigned int makeVAO(float* data, int size)
 {
     unsigned int VAO, VBO;
@@ -229,11 +278,14 @@ unsigned int makeVAO(float* data, int size)
     glBufferData(GL_ARRAY_BUFFER, size, data, GL_STATIC_DRAW);
 
     // position
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
     // normal
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
+    // texture coordinate
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
 
     glBindVertexArray(0);
     return VAO;
@@ -274,20 +326,24 @@ unsigned int makeSphere()
                 v.push_back(pts[k].x);
                 v.push_back(pts[k].y);
                 v.push_back(pts[k].z);
+                // texture coordinate (not used for the sphere)
+                v.push_back(0.0f);
+                v.push_back(0.0f);
             }
         }
     }
 
-    sphereCount = v.size() / 6;
+    sphereCount = v.size() / 8;
     return makeVAO(v.data(), v.size() * sizeof(float));
 }
 
 // ---------------- DRAWING ----------------
 
 // draws any shape (cube or sphere) at a position with a scale and a color
+// texture = 0 means plain color, otherwise the texture is used
 void draw(unsigned int shader, unsigned int VAO, int count,
     glm::vec3 pos, glm::vec3 scale,
-    glm::vec3 color, bool emissive = false)
+    glm::vec3 color, bool emissive = false, unsigned int texture = 0)
 {
     glm::mat4 model(1.0f);
     model = glm::translate(model, pos);
@@ -299,6 +355,18 @@ void draw(unsigned int shader, unsigned int VAO, int count,
     glUniformMatrix4fv(glGetUniformLocation(shader, "model"), 1, GL_FALSE, glm::value_ptr(model));
     setVec3(shader, "uColor", color);
     setBool(shader, "uEmissive", emissive);
+
+    if (texture != 0)
+    {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glUniform1i(glGetUniformLocation(shader, "uTexture"), 0);
+        setBool(shader, "uUseTexture", true);
+    }
+    else
+    {
+        setBool(shader, "uUseTexture", false);
+    }
 
     glBindVertexArray(VAO);
     glDrawArrays(GL_TRIANGLES, 0, count);
@@ -544,6 +612,10 @@ int main()
     unsigned int cube = makeVAO(cubeVertices, sizeof(cubeVertices));
     unsigned int sphere = makeSphere();
 
+    // load the textures (png or jpg, change the extension if needed)
+    texFloor = loadTexture("assets/floor.png");
+   
+
     float lastFrame = 0.0f;
     int lastRally = -1;
     GameState lastState = OUT;
@@ -590,10 +662,10 @@ int main()
         setFloat(shader, "lightQuadratic", LIGHT_QUADRATIC);
 
         // room
-        draw(shader, cube, 36, glm::vec3(0, -0.12f, 0), glm::vec3(8, 0.2f, 8), COL_GRAY_FLOOR);      // floor
-        draw(shader, cube, 36, glm::vec3(0, 2, -4), glm::vec3(8, 4, 0.15f), COL_GRAY_WALL);          // back wall
-        draw(shader, cube, 36, glm::vec3(-4, 2, 0), glm::vec3(0.15f, 4, 8), COL_GRAY_WALL);          // left wall
-        draw(shader, cube, 36, glm::vec3(4, 2, 0), glm::vec3(0.15f, 4, 8), COL_GRAY_WALL);           // right wall
+        draw(shader, cube, 36, glm::vec3(0, -0.12f, 0), glm::vec3(8, 0.2f, 8), COL_GRAY_FLOOR, false, texFloor); // floor (textured)
+        draw(shader, cube, 36, glm::vec3(0, 2, -4), glm::vec3(8, 4, 0.15f), COL_GRAY_WALL);                    // back wall (gray)
+        draw(shader, cube, 36, glm::vec3(-4, 2, 0), glm::vec3(0.15f, 4, 8), COL_GRAY_WALL);                    // left wall (gray)
+        draw(shader, cube, 36, glm::vec3(4, 2, 0), glm::vec3(0.15f, 4, 8), COL_GRAY_WALL);                    // right wall (gray)
 
         // lamp
         draw(shader, cube, 36, glm::vec3(0, 3.3f, 0), glm::vec3(0.025f, 0.8f, 0.025f), COL_METAL);  // cable

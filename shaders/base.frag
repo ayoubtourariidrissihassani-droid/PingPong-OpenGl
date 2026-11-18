@@ -2,12 +2,15 @@
 
 in vec3 FragPos;
 in vec3 Normal;
+in vec2 TexCoord;
 
 out vec4 FragColor;
 
 // material
 uniform vec3 uColor;
 uniform bool uEmissive;
+uniform bool uUseTexture;
+uniform sampler2D uTexture;
 
 // camera
 uniform vec3 viewPos;
@@ -35,13 +38,18 @@ void main()
         return;
     }
 
+    // surface color: texture or plain color
+    vec3 albedo = uColor;
+    if (uUseTexture)
+        albedo = texture(uTexture, TexCoord).rgb;
+
     vec3 norm = normalize(Normal);
 
     // ---- base lighting (slightly dark) ----
     vec3 baseDir = normalize(vec3(-0.5, 1.0, 0.7));
     float baseDiffuse = max(dot(norm, baseDir), 0.0);
     float intensity = BASE_AMBIENT + baseDiffuse * BASE_DIFFUSE;
-    vec3 base = uColor * intensity;
+    vec3 base = albedo * intensity;
 
     // ---- spot light ----
     vec3 toLight = lightPos - FragPos;
@@ -58,7 +66,7 @@ void main()
 
     // diffuse
     float diff = max(dot(norm, L), 0.0);
-    vec3 diffuse = diff * lightColor * uColor;
+    vec3 diffuse = diff * lightColor * albedo;
 
     // specular (Blinn-Phong)
     vec3 V = normalize(viewPos - FragPos);
